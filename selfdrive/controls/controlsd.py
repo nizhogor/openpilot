@@ -23,6 +23,7 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
+VisualAlert = car.CarControl.HUDControl.VisualAlert
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
@@ -161,7 +162,8 @@ class Controls:
     hudControl.lanesVisible = CC.enabled
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
     hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
-    hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual
+    dm_alert = self.sm['selfdriveState'].alertType.startswith(('driverDistracted', 'driverUnresponsive'))
+    hudControl.visualAlert = VisualAlert.none if dm_alert else self.sm['selfdriveState'].alertHudVisual
 
     hudControl.rightLaneVisible = True
     hudControl.leftLaneVisible = True
@@ -193,8 +195,7 @@ class Controls:
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)
     cs.ufAccelCmd = float(self.LoC.pid.f)
-    cs.forceDecel = bool((self.sm['driverMonitoringState'].alertLevel == log.DriverMonitoringState.AlertLevel.three) or
-                         (self.sm['selfdriveState'].state == State.softDisabling))
+    cs.forceDecel = bool(self.sm['selfdriveState'].state == State.softDisabling)
 
     lat_tuning = self.CP.lateralTuning.which()
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:

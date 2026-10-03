@@ -96,7 +96,7 @@ class TestMonitoring:
     assert d_status.active_policy == log.DriverMonitoringState.MonitoringPolicy.wheeltouch
 
   # engaged, down to orange, driver pays attention, back to normal; then down to orange, driver touches wheel
-  #  - should have short orange recovery time and no green afterwards; wheel touch only recovers when paying attention
+  #  - should have short orange recovery time and no green afterwards; wheel touch recovers even when distracted
   def test_normal_driver(self):
     ds_vector = [msg_DISTRACTED] * int(DISTRACTED_SECONDS_TO_ORANGE/DT_DMON) + \
                 [msg_ATTENTIVE] * int(DISTRACTED_SECONDS_TO_ORANGE/DT_DMON) + \
@@ -109,12 +109,12 @@ class TestMonitoring:
     assert alert_lvls[int((DISTRACTED_SECONDS_TO_ORANGE-0.1)/DT_DMON)] == 2
     assert alert_lvls[int(DISTRACTED_SECONDS_TO_ORANGE*1.5/DT_DMON)] == 0
     assert alert_lvls[int((DISTRACTED_SECONDS_TO_ORANGE*3-0.1)/DT_DMON)] == 2
-    assert alert_lvls[int((DISTRACTED_SECONDS_TO_ORANGE*3+0.1)/DT_DMON)] == 2
+    assert alert_lvls[int((DISTRACTED_SECONDS_TO_ORANGE*3+0.1)/DT_DMON)] == 0
     assert alert_lvls[int((DISTRACTED_SECONDS_TO_ORANGE*3+2.5)/DT_DMON)] == 0
 
   # engaged, down to orange, driver dodges camera, then comes back still distracted, down to red, \
-  #                          driver dodges, and then touches wheel to no avail, disengages and reengages
-  #  - orange/red alert should remain after disappearance, and only disengaging clears red
+  #                          driver dodges, and then touches wheel, disengages and reengages
+  #  - orange/red alert should remain after disappearance, and wheel touch clears red
   def test_biggest_comma_fan(self):
     _invisible_time = 2  # seconds
     ds_vector = always_distracted[:]
@@ -131,7 +131,7 @@ class TestMonitoring:
     alert_lvls, _ = self._run_seq(ds_vector, interaction_vector, op_vector, always_false)
     assert alert_lvls[int((DISTRACTED_SECONDS_TO_ORANGE+0.5*_invisible_time)/DT_DMON)] == 2
     assert alert_lvls[int((DISTRACTED_SECONDS_TO_RED+1.5*_invisible_time)/DT_DMON)] == 3
-    assert alert_lvls[int((DISTRACTED_SECONDS_TO_RED+2*_invisible_time+1.5)/DT_DMON)] == 3
+    assert alert_lvls[int((DISTRACTED_SECONDS_TO_RED+2*_invisible_time+1.5)/DT_DMON)] == 0
     assert alert_lvls[int((DISTRACTED_SECONDS_TO_RED+2*_invisible_time+3.5)/DT_DMON)] == 0
 
   # engaged, invisible driver, down to orange, driver touches wheel; then down to orange again, driver appears
@@ -154,23 +154,28 @@ class TestMonitoring:
       assert alert_lvls[int((INVISIBLE_SECONDS_TO_ORANGE*2+1-0.1)/DT_DMON)] == 2
       assert alert_lvls[int((INVISIBLE_SECONDS_TO_ORANGE*2+1+0.1+_visible_time)/DT_DMON)] == 0
 
-  # engaged, invisible driver, down to red, driver appears and then touches wheel, then disengages/reengages
-  #  - only disengage will clear the alert
+  # engaged, invisible driver, down to red, then driver appears paying attention
+  #  - paying attention clears red without disengaging
   def test_last_second_responder(self):
     _visible_time = 2  # seconds
     ds_vector = always_no_face[:]
-    interaction_vector = always_false[:]
-    op_vector = always_true[:]
     ds_vector[int(INVISIBLE_SECONDS_TO_RED/DT_DMON):int((INVISIBLE_SECONDS_TO_RED+_visible_time)/DT_DMON)] = [msg_ATTENTIVE] * int(_visible_time/DT_DMON)
-    interaction_vector[int((INVISIBLE_SECONDS_TO_RED+_visible_time)/DT_DMON):int((INVISIBLE_SECONDS_TO_RED+_visible_time+1)/DT_DMON)] = [True] * int(1/DT_DMON)
-    op_vector[int((INVISIBLE_SECONDS_TO_RED+_visible_time+1)/DT_DMON):int((INVISIBLE_SECONDS_TO_RED+_visible_time+0.5)/DT_DMON)] = [False] * int(0.5/DT_DMON)
-    alert_lvls, _ = self._run_seq(ds_vector, interaction_vector, op_vector, always_false)
+    alert_lvls, _ = self._run_seq(ds_vector, always_false, always_true, always_false)
     assert alert_lvls[int(INVISIBLE_SECONDS_TO_ORANGE*0.5/DT_DMON)] == 0
     assert alert_lvls[int((INVISIBLE_SECONDS_TO_ORANGE-0.1)/DT_DMON)] == 2
     assert alert_lvls[int((INVISIBLE_SECONDS_TO_RED-0.1)/DT_DMON)] == 3
-    assert alert_lvls[int((INVISIBLE_SECONDS_TO_RED+0.5*_visible_time)/DT_DMON)] == 3
-    assert alert_lvls[int((INVISIBLE_SECONDS_TO_RED+_visible_time+0.5)/DT_DMON)] == 3
-    assert alert_lvls[int((INVISIBLE_SECONDS_TO_RED+_visible_time+1+0.1)/DT_DMON)] == 0
+    assert alert_lvls[int((INVISIBLE_SECONDS_TO_RED+0.5*_visible_time)/DT_DMON)] == 0
+
+  # engaged, driver is distracted through repeated red alerts, touching the wheel each time
+  #  - never locks out
+  def test_no_lockout(self):
+    red_cycle = int((DISTRACTED_SECONDS_TO_RED+2)/DT_DMON)
+    interaction_vector = always_false[:]
+    for start in range(red_cycle, len(interaction_vector), red_cycle):
+      interaction_vector[start] = True
+    alert_lvls, d_status = self._run_seq(always_distracted, interaction_vector, always_true, always_false)
+    assert sum(1 for prev, cur in zip(alert_lvls, alert_lvls[1:], strict=False) if cur == 3 and prev != 3) >= 5
+    assert not d_status.get_state_packet().driverMonitoringState.lockout
 
   # disengaged, always distracted driver
   #  - dm should stay quiet when not engaged

@@ -6,7 +6,6 @@ from cereal import car, log
 import cereal.messaging as messaging
 from openpilot.common.realtime import DT_DMON
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
 from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 
@@ -35,9 +34,6 @@ class DRIVER_MONITOR_SETTINGS:
 
     self._TIMEOUT_RECOVERY_FACTOR_MAX = 5.
     self._TIMEOUT_RECOVERY_FACTOR_MIN = 1.25
-
-    self._MAX_TERMINAL_ALERTS = 3  # not allowed to engage after 3 terminal alerts
-    self._MAX_TERMINAL_DURATION = int(30 / DT_DMON)  # not allowed to engage after 30s of terminal alerts
 
     self._FACE_THRESHOLD = 0.7
     self._EYE_THRESHOLD = 0.65
@@ -141,8 +137,6 @@ class DriverMonitoring:
     self.wheel_on_right_last = None
     self.wheel_on_right_default = rhd_saved
     self.face_detected = False
-    self.terminal_alert_cnt = 0
-    self.terminal_time = 0
     self.step_change = 0.
     self.active_policy = MonitoringPolicy.vision
     self.driver_interacting = False
@@ -153,7 +147,6 @@ class DriverMonitoring:
     self.threshold_alert_2 = 0.
     self.dcam_uncertain_cnt = 0
     self.dcam_reset_cnt = 0
-    self.too_distracted = Params().get_bool("DriverTooDistracted")
 
     self._reset_awareness()
     self._set_policy(MonitoringPolicy.vision)
@@ -299,30 +292,21 @@ class DriverMonitoring:
     self.alert_level = AlertLevel.none
     self.driver_interacting = driver_engaged
 
-    if self.terminal_alert_cnt >= self.settings._MAX_TERMINAL_ALERTS or \
-       self.terminal_time >= self.settings._MAX_TERMINAL_DURATION:
-      self.too_distracted = True
-
     always_on_valid = self.always_on and not wrong_gear
-    if (self.driver_interacting and self.awareness > 0 and self.active_policy == MonitoringPolicy.wheeltouch) or \
+    if self.driver_interacting or \
        (not always_on_valid and not op_engaged) or \
        (always_on_valid and not op_engaged and self.awareness <= 0):
-      # always reset on disengage with normal mode; disengage resets only on red if always on
+      # wheel/gas input or disengage resets; with always on, disengage resets only on red
       self._reset_awareness()
       return
 
-    awareness_prev = self.awareness
     _reaching_alert_1 = self.awareness - self.step_change <= self.threshold_alert_1
     _reaching_alert_3 = self.awareness - self.step_change <= 0
     standstill_exemption = standstill and _reaching_alert_1
     always_on_exemption = always_on_valid and not op_engaged and _reaching_alert_3
 
-    if self.awareness > 0 and \
-       ((self.driver_distraction_filter.x < 0.37 and self.face_detected and self.pose.low_std) or standstill_exemption):
-      if self.driver_interacting:
-        self._reset_awareness()
-        return
-      # only restore awareness when paying attention and alert is not red
+    if (self.driver_distraction_filter.x < 0.37 and self.face_detected and self.pose.low_std) or standstill_exemption:
+      # restore awareness when paying attention
       self.awareness = min(self.awareness + ((self.settings._TIMEOUT_RECOVERY_FACTOR_MAX-self.settings._TIMEOUT_RECOVERY_FACTOR_MIN)*
                                              (1.-self.awareness)+self.settings._TIMEOUT_RECOVERY_FACTOR_MIN)*self.step_change, 1.)
       if self.awareness == 1.:
@@ -341,11 +325,7 @@ class DriverMonitoring:
         self.awareness = max(self.awareness - self.step_change, -0.1)
 
     if self.awareness <= 0.:
-      # terminal alert: disengagement required
       self.alert_level = AlertLevel.three
-      self.terminal_time += 1
-      if awareness_prev > 0.:
-        self.terminal_alert_cnt += 1
     elif self.awareness <= self.threshold_alert_2:
       self.alert_level = AlertLevel.two
     elif self.awareness <= self.threshold_alert_1:
@@ -356,9 +336,6 @@ class DriverMonitoring:
     dat = messaging.new_message('driverMonitoringState', valid=valid)
     dm = dat.driverMonitoringState
 
-    dm.lockout = self.too_distracted
-    dm.alertCountLockoutPercent = to_percent(self.terminal_alert_cnt / self.settings._MAX_TERMINAL_ALERTS)
-    dm.alertTimeLockoutPercent = to_percent(self.terminal_time / self.settings._MAX_TERMINAL_DURATION)
     dm.alwaysOn = self.always_on
     dm.alwaysOnLockout = self.always_on and self.awareness <= self.threshold_alert_2
     dm.alertLevel = self.alert_level
